@@ -13,6 +13,12 @@ Scriptet ([`src/check.js`](src/check.js)) hentar sida og reknar det som "billett
 
 For å unngå falske varsel blir sida først validert (HTTP 200 + inneheld framleis "Frogner"). Etter første treff blir `state/detected.flag` committa til repoet, slik at du ikkje får spam kvar 2. minutt. Slett den fila for å arme vakta på nytt.
 
+## Puls og introduksjonsmelding
+
+For at du skal vere trygg på at vakta faktisk lever, sender ein eigen workflow ([`.github/workflows/heartbeat.yml`](.github/workflows/heartbeat.yml)) ein **puls kvar 2. time** til den same Telegram-chaten (`node src/check.js heartbeat`). Pulsen respekterer same nattpause 01–06 (Oslo).
+
+Aller første gong puls-jobben køyrer sender han i staden éi **introduksjonsmelding** som forklarar kva vakta gjer og korleis. Den blir sendt berre éin gong, markert med `state/intro.flag` i repoet. Slett den fila om du vil sende introduksjonen på nytt.
+
 ## Oppsett
 
 ### 1. Lag ein Telegram-bot
@@ -47,8 +53,11 @@ Krev Node 20+.
 ```bash
 export TELEGRAM_BOT_TOKEN="..."
 export TELEGRAM_CHAT_ID="..."
-npm run check
+npm run check          # billettsjekk
+node src/check.js heartbeat   # puls / første gong: introduksjonsmelding
 ```
+
+> **Tips for grupper:** chat-id-en til ei (super)gruppe er eit **negativt** tal (t.d. `-1001234567890`). Ta med minusteiknet i secreten. Boten må vere medlem, og for at gruppa skal dukke opp i `getUpdates` må boten anten vere admin eller ha «privacy mode» slått av (via BotFather → `/setprivacy`).
 
 ## Godt å vite
 

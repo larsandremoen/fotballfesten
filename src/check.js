@@ -38,6 +38,8 @@ const VALIDATION_MARKERS = ["frogner"];
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATE_FILE = join(__dirname, "..", "state", "detected.flag");
+// Markerer at eingongs-introduksjonsmeldinga er sendt.
+const INTRO_FILE = join(__dirname, "..", "state", "intro.flag");
 
 const NIGHT_START_HOUR = 1; // 01:00 lokal tid
 const NIGHT_END_HOUR = 6; // 06:00 lokal tid
@@ -52,6 +54,17 @@ function osloHour() {
     hour12: false,
   });
   return Number.parseInt(formatter.format(new Date()), 10);
+}
+
+/**
+ * Lesbar dato+tid i Europe/Oslo, til bruk i pulsmeldinga.
+ */
+function osloTimestamp() {
+  return new Intl.DateTimeFormat("nb-NO", {
+    timeZone: "Europe/Oslo",
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(new Date());
 }
 
 function isNightTime() {
@@ -117,23 +130,40 @@ function evaluate(html) {
   };
 }
 
-async function alreadyNotified() {
+async function flagExists(file) {
   try {
-    await readFile(STATE_FILE, "utf8");
+    await readFile(file, "utf8");
     return true;
   } catch {
     return false;
   }
 }
 
-async function markNotified(reasons) {
-  await mkdir(dirname(STATE_FILE), { recursive: true });
-  const payload = {
-    detectedAt: new Date().toISOString(),
-    reasons,
-    url: PAGE_URL,
-  };
-  await writeFile(STATE_FILE, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+async function writeFlag(file, payload) {
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+}
+
+function introMessage() {
+  return [
+    "✅ <b>Frogner billettvakt er i gang!</b>",
+    "",
+    "Eg overvakar fotballfesten.no/frognerstadion og seier ifrå her så snart billettane til Frogner truleg blir lagde ut.",
+    "",
+    "<b>Slik fungerer det:</b>",
+    "• Eg sjekkar sida jamnleg (så ofte som mogleg på dagtid, med pause 01–06).",
+    "• Så snart «Billetter kommer snart» forsvinn, eller det dukkar opp ei kjøpslenke eller kjøpsknapp, varslar eg her — éin gong.",
+    "• Kvar 2. time sender eg ein liten puls så de veit at vakta lever.",
+    "",
+    `👉 ${PAGE_URL}`,
+  ].join("\n");
+}
+
+function heartbeatMessage() {
+  return [
+    `💓 <b>Billettvakta lever</b> (${osloTimestamp()}).`,
+    "Framleis ingen billettar oppdaga — eg varslar med ein gong noko skjer.",
+  ].join("\n");
 }
 
 async function sendTelegram(text) {
@@ -168,7 +198,7 @@ async function sendTelegram(text) {
   }
 }
 
-async function main() {
+async function runCheck() {
   if (isNightTime()) {
     console.log(
       `Nattpause (Oslo-time ${osloHour()}, mellom ${NIGHT_START_HOUR}–${NIGHT_END_HOUR}). Hoppar over.`
@@ -176,7 +206,7 @@ async function main() {
     return;
   }
 
-  if (await alreadyNotified()) {
+  if (await flagExists(STATE_FILE)) {
     console.log(
       "Varsel er allereie sendt (state/detected.flag finst). Slett fila for å arme vakta på nytt."
     );
@@ -209,8 +239,51 @@ async function main() {
   ].join("\n");
 
   await sendTelegram(message);
-  await markNotified(result.reasons);
+  await writeFlag(STATE_FILE, {
+    detectedAt: new Date().toISOString(),
+    reasons: result.reasons,
+    url: PAGE_URL,
+  });
   console.log(`Varsel sendt. Grunn: ${reasonText}`);
+}
+
+/**
+ * Sender ein "alt fungerer"-puls. Første gong (før state/intro.flag finst)
+ * sender han i staden ei eingongs introduksjonsmelding som forklarar oppsettet.
+ */
+async function runHeartbeat() {
+  if (!(await flagExists(INTRO_FILE))) {
+    await sendTelegram(introMessage());
+    await writeFlag(INTRO_FILE, { sentAt: new Date().toISOString() });
+    console.log("Introduksjonsmelding sendt (éin gong).");
+    return;
+  }
+
+  if (isNightTime()) {
+    console.log(
+      `Nattpause (Oslo-time ${osloHour()}, mellom ${NIGHT_START_HOUR}–${NIGHT_END_HOUR}). Hoppar over puls.`
+    );
+    return;
+  }
+
+  await sendTelegram(heartbeatMessage());
+  console.log("Puls sendt.");
+}
+
+async function main() {
+  const mode = process.argv[2] ?? "check";
+  switch (mode) {
+    case "check":
+      await runCheck();
+      return;
+    case "heartbeat":
+      await runHeartbeat();
+      return;
+    default:
+      throw new Error(
+        `Ukjend modus: «${mode}». Bruk «check» (standard) eller «heartbeat».`
+      );
+  }
 }
 
 main().catch((error) => {

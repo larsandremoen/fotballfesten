@@ -1,0 +1,48 @@
+name: Frogner billettvakt – puls
+
+on:
+  schedule:
+    # Kvar 2. time (UTC). GitHub garanterer ikkje eksakt intervall.
+    - cron: "0 */2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  # Delt gruppe med billettvakta så dei to workflowane ikkje pushar til
+  # state/ samtidig (concurrency-gruppa er felles for heile repoet).
+  group: frogner-billettvakt
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Send puls
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node src/check.js heartbeat
+
+      - name: Lagre intro-markffil etter første melding
+        if: success()
+        run: |
+          if [ -f state/intro.flag ] && [ -n "$(git status --porcelain state/intro.flag)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state/intro.flag
+            git commit -m "Billettvakt: introduksjonsmelding sendt"
+            git pull --rebase origin "${GITHUB_REF_NAME}" || true
+            git push
+          else
+            echo "Ingen ny intro-markffil å committe."
+          fi
