@@ -53,7 +53,8 @@ Krev Node 20+.
 ```bash
 export TELEGRAM_BOT_TOKEN="..."
 export TELEGRAM_CHAT_ID="..."
-npm run check          # billettsjekk
+npm run check                 # éin billettsjekk
+node src/check.js watch       # loop: sjekk ~kvart 15. s til treff/timeout
 node src/check.js heartbeat   # puls / første gong: introduksjonsmelding
 ```
 
@@ -61,5 +62,7 @@ node src/check.js heartbeat   # puls / første gong: introduksjonsmelding
 
 ## Godt å vite
 
-- **Minsteintervall:** GitHub Actions køyrer planlagte workflows høgst kvart 5. minutt — ein `*/2`-cron blir uansett ikkje køyrd oftare, så workflowen er sett til `*/5`. I tillegg garanterer ikkje GitHub eksakt intervall; jobbar kan forseinkast (ofte 5–15 min ved høg last) og bli hoppa over dersom repoet er heilt inaktivt over lengre tid.
+- **Tett sjekk via watch-loop:** GitHub sin cron kan berre starte kvart 5. minutt, så for å komme tettare køyrer billettvakta i `watch`-modus: kvar Actions-køyring loopar internt og sjekkar ~kvart 15. sekund (med litt tilfeldig jitter) i knappe 5 minutt, før cron startar ei ny køyring. Slik får vi nær samanhengande overvaking med korte, sjølvlækjande jobbar. Dette krev at repoet er **offentleg** (gratis, uendelege Actions-minutt); på private repo tel kvart minutt mot kvota.
+- **Snill mot serveren:** intervallet har jitter, og ved feil (t.d. om sida byrjar avvise oss) aukar ventetida gradvis (backoff) for å unngå utestenging. Så snart eit varsel er sendt, stoppar loopen. Justerbart via miljøvariablar: `WATCH_INTERVAL_SECONDS`, `WATCH_JITTER_SECONDS`, `WATCH_MAX_SECONDS`, `WATCH_ERROR_BACKOFF_SECONDS`, `WATCH_MAX_BACKOFF_SECONDS`.
+- **GitHub garanterer ikkje eksakt intervall;** planlagte jobbar kan forseinkast (ofte 5–15 min ved høg last). Watch-loopen dempar dette ved at kvar køyring dekkjer fleire minutt med sjekk.
 - Cron i workflowen er i **UTC** (`*/5 4-22 * * *`). Scriptet har i tillegg ein `Europe/Oslo`-sjekk, så nattpausen 01–06 held seg rett også ved skifte mellom sommar- og vintertid.

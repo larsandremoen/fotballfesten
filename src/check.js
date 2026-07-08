@@ -45,6 +45,36 @@ const NIGHT_START_HOUR = 1; // 01:00 lokal tid
 const NIGHT_END_HOUR = 6; // 06:00 lokal tid
 
 /**
+ * Les eit positivt heiltal frå miljøet, med fallback dersom det manglar
+ * eller er ugyldig.
+ */
+function envInt(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined) {
+    return fallback;
+  }
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+// «watch»-modus: køyr sjekken i ein loop innanfor éi Actions-køyring, så vi
+// kjem under GitHub sitt 5-minutts cron-golv utan å hamre serveren.
+const WATCH_INTERVAL_SECONDS = envInt("WATCH_INTERVAL_SECONDS", 15);
+// Tilfeldig ± på intervallet, så trafikken ikkje er heilt regelmessig.
+const WATCH_JITTER_SECONDS = envInt("WATCH_JITTER_SECONDS", 3);
+// Maks levetid for éi køyring. Cron startar ei ny etterpå. Held oss godt
+// under jobb-timeouten og lèt ny kode/rekkjefølgje bli plukka opp jamt.
+const WATCH_MAX_SECONDS = envInt("WATCH_MAX_SECONDS", 270);
+// Ekstra pause (sekund) etter ein feil, for å vere snill mot serveren og
+// unngå utestenging dersom sida byrjar å avvise oss. Doblar seg per feil.
+const WATCH_ERROR_BACKOFF_SECONDS = envInt("WATCH_ERROR_BACKOFF_SECONDS", 30);
+const WATCH_MAX_BACKOFF_SECONDS = envInt("WATCH_MAX_BACKOFF_SECONDS", 300);
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
  * Timen (0-23) i Europe/Oslo akkurat no. Robust mot sommar-/vintertid.
  */
 function osloHour() {
@@ -198,19 +228,24 @@ async function sendTelegram(text) {
   }
 }
 
+/**
+ * Køyrer éin billettsjekk. Returnerer true når vakta er i ein terminal
+ * tilstand (varsel sendt, allereie varsla, eller nattpause) og ein loop
+ * difor bør stoppe. Returnerer false når det er verdt å prøve igjen seinare.
+ */
 async function runCheck() {
   if (isNightTime()) {
     console.log(
       `Nattpause (Oslo-time ${osloHour()}, mellom ${NIGHT_START_HOUR}–${NIGHT_END_HOUR}). Hoppar over.`
     );
-    return;
+    return true;
   }
 
   if (await flagExists(STATE_FILE)) {
     console.log(
       "Varsel er allereie sendt (state/detected.flag finst). Slett fila for å arme vakta på nytt."
     );
-    return;
+    return true;
   }
 
   const html = await fetchPage();
@@ -220,12 +255,12 @@ async function runCheck() {
     console.warn(
       "Sida såg ikkje gyldig ut (fann ikkje forventa innhald). Hoppar over for å unngå falskt varsel."
     );
-    return;
+    return false;
   }
 
   if (!result.ticketsOut) {
     console.log(`Ingen endring: «${PLACEHOLDER_TEXT}» er framleis på sida.`);
-    return;
+    return false;
   }
 
   const reasonText = result.reasons.join("; ");
@@ -245,6 +280,54 @@ async function runCheck() {
     url: PAGE_URL,
   });
   console.log(`Varsel sendt. Grunn: ${reasonText}`);
+  return true;
+}
+
+/**
+ * Køyrer billettsjekken i ein loop innanfor éi Actions-køyring, ca. kvart
+ * WATCH_INTERVAL_SECONDS (med jitter). Avsluttar ved treff/terminal tilstand
+ * eller når WATCH_MAX_SECONDS er brukt opp. Feil under henting stoppar ikkje
+ * loopen; i staden ventar vi lenger (aukande backoff) for ikkje å bli utestengd.
+ */
+async function runWatch() {
+  const deadline = Date.now() + WATCH_MAX_SECONDS * 1000;
+  let consecutiveErrors = 0;
+  let checks = 0;
+
+  console.log(
+    `Watch startar: sjekk ~kvart ${WATCH_INTERVAL_SECONDS}s (±${WATCH_JITTER_SECONDS}s) i opptil ${WATCH_MAX_SECONDS}s.`
+  );
+
+  while (Date.now() < deadline) {
+    let waitSeconds;
+    try {
+      const stop = await runCheck();
+      checks += 1;
+      consecutiveErrors = 0;
+      if (stop) {
+        console.log(`Watch avsluttar etter ${checks} sjekk (terminal tilstand).`);
+        return;
+      }
+      const jitter = Math.round((Math.random() * 2 - 1) * WATCH_JITTER_SECONDS);
+      waitSeconds = Math.max(1, WATCH_INTERVAL_SECONDS + jitter);
+    } catch (error) {
+      consecutiveErrors += 1;
+      waitSeconds = Math.min(
+        WATCH_ERROR_BACKOFF_SECONDS * 2 ** (consecutiveErrors - 1),
+        WATCH_MAX_BACKOFF_SECONDS
+      );
+      console.warn(
+        `Sjekk feila (${consecutiveErrors} på rad): ${error.message}. Ventar ${waitSeconds}s før nytt forsøk.`
+      );
+    }
+
+    if (Date.now() + waitSeconds * 1000 >= deadline) {
+      break;
+    }
+    await sleep(waitSeconds * 1000);
+  }
+
+  console.log(`Watch ferdig (tidsbudsjett brukt opp) etter ${checks} sjekk.`);
 }
 
 /**
@@ -276,12 +359,15 @@ async function main() {
     case "check":
       await runCheck();
       return;
+    case "watch":
+      await runWatch();
+      return;
     case "heartbeat":
       await runHeartbeat();
       return;
     default:
       throw new Error(
-        `Ukjend modus: «${mode}». Bruk «check» (standard) eller «heartbeat».`
+        `Ukjend modus: «${mode}». Bruk «check» (standard), «watch» eller «heartbeat».`
       );
   }
 }

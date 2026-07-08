@@ -7,9 +7,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Delt gruppe med billettvakta så dei to workflowane ikkje pushar til
-  # state/ samtidig (concurrency-gruppa er felles for heile repoet).
-  group: frogner-billettvakt
+  # Eigen gruppe så pulsen ikkje blir svelta av den nær samanhengande
+  # billettvakta. Push-konflikt er usannsynleg (intro.flag skrivast berre
+  # éin gong), og commit-steget gjer uansett `git pull --rebase` før push.
+  group: frogner-billettvakt-heartbeat
   cancel-in-progress: false
 
 permissions:
