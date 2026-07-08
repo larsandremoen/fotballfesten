@@ -1,1 +1,56 @@
-# fotballfesten
+# Frogner billettvakt
+
+Overvakar [fotballfesten.no/frognerstadion](https://www.fotballfesten.no/frognerstadion) og sender ei **Telegram-melding** når billettane truleg er lagde ut for sal.
+
+Køyrer på GitHub Actions så ofte som mogleg (sjå merknad under), med nattpause mellom 01 og 06 (lokal tid, Oslo).
+
+## Korleis det oppdagar billettar
+
+Scriptet ([`src/check.js`](src/check.js)) hentar sida og reknar det som "billettar ute" dersom:
+
+- **Primærsignal:** teksten `Billetter kommer snart` er borte, ELLER
+- **Støttesignal:** ein kjøpsindikator dukkar opp — kjøpstekst (`Book billetter`, `Kjøp billetter`, `Book oppgradering`, …) eller ei billettlenke. Det sterkaste lenkesignalet er Fotballfesten sitt eige bookingsystem `fanparks.fanparks.com/booking/…` (observert på [Kongens Gate-sida](https://www.fotballfesten.no/home-3-1) som har billettar ute), med vanlege leverandørar (`ticketco`, `tikkio`, `ticketmaster`, …) som fallback.
+
+For å unngå falske varsel blir sida først validert (HTTP 200 + inneheld framleis "Frogner"). Etter første treff blir `state/detected.flag` committa til repoet, slik at du ikkje får spam kvar 2. minutt. Slett den fila for å arme vakta på nytt.
+
+## Oppsett
+
+### 1. Lag ein Telegram-bot
+
+1. Opne Telegram og start ein chat med [@BotFather](https://t.me/BotFather).
+2. Send `/newbot` og følg instruksjonane. Du får eit **bot-token** (ser ut som `123456789:ABC-DEF...`).
+3. Start ein chat med din nye bot og send ei melding (t.d. `hei`) — botten må ha fått minst éi melding frå deg.
+
+### 2. Finn chat-id-en din
+
+1. Opne `https://api.telegram.org/bot<DITT_TOKEN>/getUpdates` i nettlesaren (byt ut `<DITT_TOKEN>`).
+2. Finn `"chat":{"id":...}` i svaret. Dette talet er `TELEGRAM_CHAT_ID`.
+
+### 3. Legg inn secrets i GitHub
+
+Gå til repoet på GitHub → **Settings → Secrets and variables → Actions → New repository secret** og legg til:
+
+| Namn                 | Verdi                       |
+| -------------------- | --------------------------- |
+| `TELEGRAM_BOT_TOKEN` | bot-tokenet frå BotFather   |
+| `TELEGRAM_CHAT_ID`   | chat-id-en frå steg 2       |
+
+### 4. Slå på og test
+
+- Workflowen ([`.github/workflows/check-tickets.yml`](.github/workflows/check-tickets.yml)) startar automatisk på schedule når han ligg på standardbranchen.
+- Test heile kjeda manuelt: gå til **Actions → Frogner billettvakt → Run workflow** (`workflow_dispatch`).
+
+## Køyre lokalt
+
+Krev Node 20+.
+
+```bash
+export TELEGRAM_BOT_TOKEN="..."
+export TELEGRAM_CHAT_ID="..."
+npm run check
+```
+
+## Godt å vite
+
+- **Minsteintervall:** GitHub Actions køyrer planlagte workflows høgst kvart 5. minutt — ein `*/2`-cron blir uansett ikkje køyrd oftare, så workflowen er sett til `*/5`. I tillegg garanterer ikkje GitHub eksakt intervall; jobbar kan forseinkast (ofte 5–15 min ved høg last) og bli hoppa over dersom repoet er heilt inaktivt over lengre tid.
+- Cron i workflowen er i **UTC** (`*/5 4-22 * * *`). Scriptet har i tillegg ein `Europe/Oslo`-sjekk, så nattpausen 01–06 held seg rett også ved skifte mellom sommar- og vintertid.

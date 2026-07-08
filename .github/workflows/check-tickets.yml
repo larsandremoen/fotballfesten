@@ -1,0 +1,48 @@
+name: Frogner billettvakt
+
+on:
+  schedule:
+    # Så ofte som GitHub Actions tillèt: minsteintervall for schedule er 5 min
+    # (ein "*/2" blir uansett ikkje køyrd oftare enn ~5 min).
+    # UTC-time 04–22 = ca. 06–00 lokal sommartid, dvs. pause 01–06 lokalt.
+    # Merk: GitHub garanterer ikkje eksakt intervall; planlagte jobbar kan forseinkast.
+    - cron: "*/5 4-22 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: frogner-billettvakt
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Sjekk billettstatus
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node src/check.js
+
+      - name: Lagre markffil ved treff
+        if: success()
+        run: |
+          if [ -f state/detected.flag ] && [ -n "$(git status --porcelain state/detected.flag)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state/detected.flag
+            git commit -m "Billettvakt: treff registrert"
+            git push
+          else
+            echo "Ingen ny markffil å committe."
+          fi

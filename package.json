@@ -1,0 +1,13 @@
+{
+  "name": "frogner-billettvakt",
+  "version": "1.0.0",
+  "description": "Overvakar fotballfesten.no/frognerstadion og varslar på Telegram når billettane truleg er lagt ut for sal.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "check": "node src/check.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
