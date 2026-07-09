@@ -2,19 +2,18 @@ name: Frogner billettvakt
 
 on:
   schedule:
-    # Cron kan berre starte kvart 5. min, men kvar køyring køyrer «watch»-modus
-    # som loopar internt (~kvar 15. s) i knappe 5 min. Slik får vi nær
-    # samanhengande sjekk med korte, sjølvlækjande køyringar.
+    # Cron kan berre starte kvart 5. min, men kvar tick startar fleire
+    # forskuva «watch»-vakter (matrisa under) som til saman dekkjer heile
+    # 5-minutters-vindauget tett. Vindauga overlappar dessutan med neste
+    # tick, så ei forseinka cron-køyring ikkje etterlèt hol.
     # UTC-time 04–22 = ca. 06–00 lokal sommartid, dvs. pause 01–06 lokalt.
-    # Merk: GitHub garanterer ikkje eksakt intervall; planlagte jobbar kan forseinkast.
+    # Merk: GitHub garanterer ikkje eksakt intervall.
     - cron: "*/5 4-22 * * *"
   workflow_dispatch:
 
-concurrency:
-  # Eigen gruppe: hindrar at to billettsjekk-køyringar overlappar, utan å
-  # blokkere puls-workflowen (som har si eiga gruppe).
-  group: frogner-billettvakt-check
-  cancel-in-progress: false
+# Med vilje INGEN concurrency-serialisering: vi VIL at køyringar overlappar
+# for å tette hol når cron er forseinka. Kvar vakt avsluttar seg sjølv på
+# nokre minutt, så talet på samtidige jobbar held seg lågt.
 
 permissions:
   contents: write
@@ -22,9 +21,17 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # Hard tryggleik: watch-modus avsluttar sjølv etter WATCH_MAX_SECONDS (270s),
-    # men dette hindrar ei jobb i å henge for evig dersom noko går gale.
-    timeout-minutes: 8
+    # Watch-modus stoppar sjølv etter WATCH_MAX_SECONDS (270s), pluss forskuv.
+    # Timeouten er berre ei hard tryggleiksgrense mot hengande jobbar.
+    timeout-minutes: 12
+    strategy:
+      # Éin vakt som feilar skal ikkje kansellere dei andre.
+      fail-fast: false
+      matrix:
+        # Forskuv (sekund) så éin cron-tick gir tett, overlappande dekning
+        # over heile 5-minutters-vindauget. Fleire vakter gir òg redundans:
+        # backoff etter feil i éi vakt blindar ikkje overvakinga.
+        offset: [0, 75, 150, 225]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,22 +41,37 @@ jobs:
         with:
           node-version: 20
 
+      - name: Forskyv start
+        run: sleep ${{ matrix.offset }}
+
       - name: Sjekk billettstatus (watch-loop)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Send ikkje herfrå: lat push-vinnaren varsle, så vi slepp duplikat
+          # frå dei andre parallelle vaktene som oppdagar det same treffet.
+          DEFER_NOTIFY: "1"
         run: node src/check.js watch
 
-      - name: Lagre markffil ved treff
+      - name: Krev treffet og varsle (berre push-vinnaren)
         if: success()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           if [ -f state/detected.flag ] && [ -n "$(git status --porcelain state/detected.flag)" ]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add state/detected.flag
             git commit -m "Billettvakt: treff registrert"
-            git pull --rebase origin "${GITHUB_REF_NAME}" || true
-            git push
+            # git-push er atomisk: berre éin jobb får fast-forward. Vinnaren
+            # varslar; taparane (push avvist) teier, så vi får eitt varsel.
+            if git push; then
+              echo "Vann kappløpet – sender varsel."
+              node src/check.js notify
+            else
+              echo "Ein annan jobb registrerte treffet først – hoppar over varsling."
+            fi
           else
             echo "Ingen ny markffil å committe."
           fi

@@ -70,6 +70,13 @@ const WATCH_MAX_SECONDS = envInt("WATCH_MAX_SECONDS", 270);
 const WATCH_ERROR_BACKOFF_SECONDS = envInt("WATCH_ERROR_BACKOFF_SECONDS", 30);
 const WATCH_MAX_BACKOFF_SECONDS = envInt("WATCH_MAX_BACKOFF_SECONDS", 300);
 
+// I CI køyrer fleire vakter i parallel. For å unngå duplikat-varsel når
+// billettane dukkar opp, sender dei IKKJE sjølve: dei skriv berre flagget.
+// Så committar kvar jobb flagget og prøver `git push` – berre den som vinn
+// (fast-forward) sender via «notify». Dei andre får push avvist og teier.
+// Lokalt (utan DEFER_NOTIFY) sender vi som før, med ein gong.
+const DEFER_NOTIFY = process.env.DEFER_NOTIFY === "1";
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -196,6 +203,17 @@ function heartbeatMessage() {
   ].join("\n");
 }
 
+function ticketsMessage(reasons) {
+  return [
+    "🎟️ <b>Frogner-billettar!</b>",
+    "",
+    "Sida ser ut til å ha endra seg – billettane kan vere lagde ut:",
+    reasons.join("; "),
+    "",
+    `👉 ${PAGE_URL}`,
+  ].join("\n");
+}
+
 async function sendTelegram(text) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -264,21 +282,23 @@ async function runCheck() {
   }
 
   const reasonText = result.reasons.join("; ");
-  const message = [
-    "🎟️ <b>Frogner-billettar!</b>",
-    "",
-    "Sida ser ut til å ha endra seg – billettane kan vere lagde ut:",
-    reasonText,
-    "",
-    `👉 ${PAGE_URL}`,
-  ].join("\n");
-
-  await sendTelegram(message);
-  await writeFlag(STATE_FILE, {
+  const message = ticketsMessage(result.reasons);
+  const payload = {
     detectedAt: new Date().toISOString(),
     reasons: result.reasons,
     url: PAGE_URL,
-  });
+    message,
+  };
+
+  if (DEFER_NOTIFY) {
+    // Ikkje send her. Skriv flagget; workflowen let push-vinnaren varsle.
+    await writeFlag(STATE_FILE, { ...payload, notified: false });
+    console.log(`Treff registrert (deferra varsling). Grunn: ${reasonText}`);
+    return true;
+  }
+
+  await sendTelegram(message);
+  await writeFlag(STATE_FILE, { ...payload, notified: true });
   console.log(`Varsel sendt. Grunn: ${reasonText}`);
   return true;
 }
@@ -353,6 +373,30 @@ async function runHeartbeat() {
   console.log("Puls sendt.");
 }
 
+/**
+ * Sender varselet som ligg lagra i state/detected.flag. Blir kalla av
+ * workflowen etter at jobben har vunne git-push-kappløpet om treffet, slik
+ * at berre éin av dei parallelle vaktene faktisk varslar. Idempotent: hoppar
+ * over dersom flagget alt er markert som varsla.
+ */
+async function runNotify() {
+  const raw = await readFile(STATE_FILE, "utf8").catch(() => null);
+  if (raw === null) {
+    console.log("Ingen state/detected.flag å varsle frå.");
+    return;
+  }
+
+  const data = JSON.parse(raw);
+  if (data.notified) {
+    console.log("Flagget er alt markert som varsla. Hoppar over.");
+    return;
+  }
+
+  await sendTelegram(data.message ?? ticketsMessage(data.reasons ?? []));
+  await writeFlag(STATE_FILE, { ...data, notified: true });
+  console.log("Varsel sendt (notify).");
+}
+
 async function main() {
   const mode = process.argv[2] ?? "check";
   switch (mode) {
@@ -365,9 +409,12 @@ async function main() {
     case "heartbeat":
       await runHeartbeat();
       return;
+    case "notify":
+      await runNotify();
+      return;
     default:
       throw new Error(
-        `Ukjend modus: «${mode}». Bruk «check» (standard), «watch» eller «heartbeat».`
+        `Ukjend modus: «${mode}». Bruk «check» (standard), «watch», «heartbeat» eller «notify».`
       );
   }
 }
